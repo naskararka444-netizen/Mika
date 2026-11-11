@@ -30,7 +30,7 @@ enum class ConfirmChoice { Once, Deny;
 
 /** 询问 / 自主:此刻是不是自主模式(中途换成自主时,正在跑的任务从下一步起照它)。由设置提供,测试里换成固定值。 */
 fun interface ApprovalSettings {
-    /** 自主模式:连付款也不先问。 */
+    /** 自主模式:付款和下单仍须先问。 */
     fun autonomous(): Boolean
 
     companion object {

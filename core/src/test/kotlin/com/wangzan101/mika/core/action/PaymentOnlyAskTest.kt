@@ -119,9 +119,9 @@ private class Settable(var auto: Boolean = false) : ApprovalSettings {
 class PaymentOnlyAskTest {
     private fun loop(
         m: FakeModel, s: Chat, approvals: ApprovalSettings = Settable(), sink: RunSink = RunSink.NONE, timeout: Long? = null,
-        flags: SpeedFlags = SpeedFlags.OFF, self: String? = null,
+        flags: SpeedFlags = SpeedFlags.OFF, self: String? = null, autonomous: Boolean = false,
     ) = AgentLoop(m, toolDispatcher(s), "BASE", sink = sink, confirmations = ConfirmationGate(),
-        approvals = approvals, confirmTimeoutMs = timeout, flags = flags, selfPackage = self)
+        approvals = approvals, confirmTimeoutMs = timeout, flags = flags, selfPackage = self, autonomous = autonomous)
 
     @Test fun sendsWithoutAskingAndAudits() = runTest {
         val s = Chat(); val sink = Events()
@@ -208,7 +208,7 @@ class PaymentOnlyAskTest {
         assertEquals(listOf("@e3"), s.taps)
     }
 
-    @Test fun switchingToAutonomousMidRunStopsAskingEvenForPaymentFromTheNextStep() = runTest {
+    @Test fun switchingToAutonomousMidRunStillRequiresApprovalForOrder() = runTest {
         val s = Chat(page = checkoutPage)
         val approvals = Settable()
         val m = FakeModel(OBSERVE, tap("@e3"), tap("@e3"), FINISH)
@@ -221,7 +221,38 @@ class PaymentOnlyAskTest {
         }
         AgentLoop(flipping, toolDispatcher(s), "BASE", confirmations = ConfirmationGate(), approvals = approvals).run("t")
         assertEquals("confirmation_required", m.result(2).s("error"))
-        assertEquals(listOf("@e3"), s.taps)
+        assertEquals("confirmation_required", m.result(3).s("error"))
+        assertTrue(s.taps.isEmpty())
+    }
+
+    @Test fun autonomousStillBlocksPaymentsAndOrdersWithoutApproval() = runTest {
+        for (dynamic in listOf(false, true)) {
+            for (ref in listOf("@e3", "@e4")) {
+                val s = Chat(page = checkoutPage)
+                val m = FakeModel(OBSERVE, tap(ref), GIVE_UP)
+                loop(m, s, approvals = Settable(dynamic), autonomous = !dynamic).run("t")
+                assertTrue(s.taps.isEmpty())
+                assertEquals("confirmation_required", m.result(2).s("error"))
+            }
+        }
+    }
+
+    @Test fun autonomousStillProtectsOwnApp() = runTest {
+        for (dynamic in listOf(false, true)) {
+            val s = Chat(app = "com.mika")
+            val m = FakeModel(OBSERVE, tap("@e6"), GIVE_UP)
+            loop(m, s, approvals = Settable(dynamic), autonomous = !dynamic, self = "com.mika").run("t")
+            assertTrue(s.taps.isEmpty())
+            assertEquals("own_app", m.result(2).s("error"))
+
+            s.app = "com.chat"
+            val m2 = FakeModel(OBSERVE, tools(call("phone_launch_app", """{"package":"com.mika"}""")),
+                tools(call("phone_open_link", """{"uri":"package:com.mika"}""")), GIVE_UP)
+            loop(m2, s, approvals = Settable(dynamic), autonomous = !dynamic, self = "com.mika").run("t")
+            assertTrue(s.opened.isEmpty())
+            assertEquals("own_app", m2.result(2).s("error"))
+            assertEquals("own_app", m2.result(3).s("error"))
+        }
     }
 
     @Test fun batchStepsSendButStopAtPayment() = runTest {
