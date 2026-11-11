@@ -47,7 +47,7 @@ class ConfirmDecision(
     private val risks: RiskJudge = ClassifiedRisk,
     private val recorder: ActionRecorder? = null,
     private val provenance: RunProvenance = RunProvenance(),
-    /** 开工就是自主执行(没有确认关卡):付款也不问,界面目标猜测也不阻断动作;中途换成自主看 [ApprovalSettings.autonomous]。 */
+    /** 开工就是自主执行:付款仍须同意,界面目标猜测不阻断动作;中途换成自主看 [ApprovalSettings.autonomous]。 */
     private val autonomous: Boolean = false,
     /** Mika 自己的包名:作用在它上面的写操作一律不做(不自己给自己点同意、改设置)。 */
     private val selfPackage: String? = null,
@@ -62,14 +62,7 @@ class ConfirmDecision(
     /** 判定放在锁屏等待之后:按此刻重新读的一屏判。 */
     suspend fun judge(tool: String, args: JsonObject, origin: Origin): Decision {
         outwardSite = null
-        if (autonomous || approvals.autonomous()) {
-            val target = tools.gateTarget(tool)
-            if (IrreversibleDetector.needsCheck(target, args)) {
-                val aim = tools.interfaces.actionTarget(tools.declared(tool), args)
-                outwardSite = outward(IrreversibleDetector.classify(target, aim.args, aim.aimed), aim.aimed)
-            }
-            return Decision.Clear
-        }
+        val isAutonomous = autonomous || approvals.autonomous()
         val policy = origin.policy
         val target = tools.gateTarget(tool)
         // 这一步落在哪里由界面一侧给出;点看图找到的 @vN 时参数已换成它登记的坐标和找的文字
@@ -77,9 +70,12 @@ class ConfirmDecision(
         val checked = aim.args
         if (ownApp(tool, args, aim.aimed)) return Decision.OwnApp
         tools.approvalRisk(tool, checked)?.let { declared ->
-            return approve(tool, checked, origin, null, declared, null, null, null) ?: Decision.Clear
+            if (!isAutonomous || declared.payment) {
+                return approve(tool, checked, origin, null, declared, null, null, null) ?: Decision.Clear
+            }
+            return Decision.Clear
         }
-        if (confirmations == null && !policy.judgeWithoutGate) return Decision.Clear
+        if (!isAutonomous && confirmations == null && !policy.judgeWithoutGate) return Decision.Clear
         val verb = tools.verb(tool)
         val typing = if (verb == Verb.TypeText) (args["text"] as? JsonPrimitive)?.contentOrNull else null
         // 没有可判的不可逆字样的动作(一般改动、界面间移动)不花钱,不用问
@@ -92,7 +88,10 @@ class ConfirmDecision(
         val hit = IrreversibleDetector.classify(target, checked, snap, fresh)
         val risk = risks.assess(verb, hit) { fresh ?: snap }
         outwardSite = outward(hit, fresh ?: snap)
-        approve(tool, checked, origin, hit, risk, fresh ?: snap, typing, seen)?.let { return it }
+        if (!isAutonomous || risk.payment) {
+            approve(tool, checked, origin, hit, risk, fresh ?: snap, typing, seen)?.let { return it }
+        }
+        if (isAutonomous) return Decision.Clear
         if (hit != null || !IrreversibleDetector.unresolved(target, checked, snap, fresh)) return Decision.Clear
         return if (policy.refuseUnresolved) Decision.Unresolved else Decision.Traced(unresolvedDetail(args, aim.readAgeMs, fresh != null))
     }
